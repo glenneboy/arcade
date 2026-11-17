@@ -88,11 +88,14 @@ function newState() {
     bx: W / 2, by: H / 2, vx: 0, vy: 0,
     p: [W / 2, W / 2], sc: [0, 0],
     ph: 'serve', cd: 1.6, srv: Math.random() < 0.5 ? 0 : 1,
-    h: 0, wb: 0, last: -1, win: -1, seq: 0,
+    h: 0, wb: 0, last: -1, win: -1,
+    ang: randAng(), pred: false, hold: false,
   };
 }
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+function randAng() { return (Math.random() * 2 - 1) * 0.45; }
+const online = () => mode === 'host' || mode === 'guest';
 const target = [W / 2, W / 2];     // desired paddle x from input
 const pvel = [0, 0];               // paddle velocity (for spin)
 const cpu = { err: 0, think: 0 };
@@ -103,15 +106,15 @@ function step(dt) {
     S.cd -= dt;
     if (S.cd <= 0) {
       S.ph = 'play';
-      const a = (Math.random() * 2 - 1) * 0.45;
+      const a = S.ang;
       const dir = S.srv === 0 ? 1 : -1;
       S.vx = Math.sin(a) * SERVE_SPEED;
       S.vy = Math.cos(a) * SERVE_SPEED * dir;
-      S.last = -1;
+      S.last = -1; S.pred = false; S.hold = false;
     }
     return;
   }
-  if (S.ph !== 'play') return;
+  if (S.ph !== 'play' || S.hold) return;
 
   const py = S.by;
   S.bx += S.vx * dt; S.by += S.vy * dt;
@@ -123,8 +126,20 @@ function step(dt) {
   const face1 = PY[1] + PT / 2;
   if (S.vy < 0 && py - BR >= face1 - 0.02 && S.by - BR <= face1 && Math.abs(S.bx - S.p[1]) <= PW + BR) hit(1, face1 + BR);
 
-  if (S.by > H + BR * 3) point(1);
-  else if (S.by < -BR * 3) point(0);
+  if (S.by > H + BR * 3) goal(1);
+  else if (S.by < -BR * 3) goal(0);
+}
+
+// Online, each phone is the authority for its own paddle and goal line.
+// The ball passing the OTHER player's line just waits for their verdict.
+function goal(scorer) {
+  if (!online()) { point(scorer); return; }
+  if (1 - scorer === me) {
+    point(scorer);
+    link?.send({ t: 'pt', sc: S.sc, srv: S.srv, ang: S.ang });
+  } else {
+    S.hold = true; S.vx = S.vy = 0;
+  }
 }
 
 function hit(i, y) {
@@ -138,6 +153,13 @@ function hit(i, y) {
   S.vy = Math.sqrt(Math.max(sp * sp - vx * vx, 1)) * dir;
   S.by = y;
   S.h++; S.last = i;
+  if (online()) {
+    if (i === me) {
+      S.pred = false;
+      net.myHits++;
+      link?.send({ t: 'hit', n: net.myHits, b: [r3(S.bx), r3(S.by), r3(S.vx), r3(S.vy)] });
+    } else S.pred = true; // predicted from opponent's last known paddle; confirmed/corrected by their message
+  }
   cpu.err = (Math.random() * 2 - 1) * 0.9;
 }
 
@@ -145,7 +167,8 @@ function point(i) {
   S.sc[i]++;
   S.vx = S.vy = 0;
   if (S.sc[i] >= WIN) { S.ph = 'over'; S.win = i; }
-  else { S.ph = 'serve'; S.cd = 1.1; S.srv = 1 - i; }
+  else { S.ph = 'serve'; S.cd = 1.1; S.srv = 1 - i; S.ang = randAng(); }
+  S.pred = false; S.hold = false;
 }
 
 // CPU: predicts where the ball will cross its line, with some error and limited speed
@@ -277,38 +300,78 @@ function detectEvents() {
 }
 
 // ---------- Networking ----------
-let lastRecv = 0, lastSend = 0, recvState = null, recvAt = 0, guestX = W / 2;
-
-function packState() {
-  S.seq++;
-  return { t: 's', q: S.seq, b: [r3(S.bx), r3(S.by), r3(S.vx), r3(S.vy)], p: [r3(S.p[0]), r3(S.p[1])],
-    sc: S.sc, ph: S.ph, cd: r3(S.cd), h: S.h, wb: S.wb, l: S.last, w: S.win };
-}
+// Both phones run the full simulation. Messages:
+//   p   paddle x (stream)          hit  my paddle hit the ball: new ball state
+//   pt  ball passed my line: score  go   (host) start/restart a match
+//   r   (guest) rematch request    pi/po latency ping
+const net = { myHits: 0, theirHits: 0, gen: 0, oppX: W / 2, rtt: 0, lastPo: 0, goAt: 0, lastGo: 0, lastPing: 0 };
+let lastRecv = 0, lastSend = 0;
 const r3 = (v) => Math.round(v * 1000) / 1000;
+const oneWay = () => clamp(net.rtt / 2, 0, 250) / 1000;
+
+// Move the ball forward in time (walls only), without crossing my own paddle face
+function advanceBall(t) {
+  const myFace = me === 0 ? PY[0] - PT / 2 - BR : PY[1] + PT / 2 + BR;
+  if ((me === 0 && S.vy > 0) || (me === 1 && S.vy < 0)) t = Math.min(t, Math.max(0, (myFace - S.by) / S.vy - 0.01));
+  let x = S.bx + S.vx * t;
+  if (x < BR) x = 2 * BR - x; else if (x > W - BR) x = 2 * (W - BR) - x;
+  S.bx = clamp(x, BR, W - BR); S.by += S.vy * t;
+}
+
+function sendGo() {
+  link?.send({ t: 'go', g: net.gen, srv: S.srv, ang: S.ang, cd: r3(S.cd) });
+}
 
 function onData(m) {
   lastRecv = performance.now();
-  if (!m || typeof m !== 'object') return;
-  if (mode === 'host') {
-    if (m.t === 'p' && typeof m.x === 'number') guestX = clamp(m.x, 0, W);
-    else if (m.t === 'r' && S.ph === 'over') restart();
-  } else if (mode === 'guest') {
-    if (m.t === 's') {
-      if (recvState && m.q <= recvState.q) return; // stale (unordered channel)
-      recvState = m; recvAt = performance.now();
+  if (!m || typeof m !== 'object' || !S) return;
+  switch (m.t) {
+    case 'p':
+      if (typeof m.x === 'number') net.oppX = clamp(m.x, 0, W);
+      break;
+    case 'pi':
+      link?.send({ t: 'po', ts: m.ts });
+      break;
+    case 'po':
+      if (m.ts > net.lastPo) {
+        net.lastPo = m.ts;
+        const sample = performance.now() - m.ts;
+        net.rtt = net.rtt ? net.rtt * 0.8 + sample * 0.2 : sample;
+      }
+      break;
+    case 'hit':
+      if (m.n <= net.theirHits || S.ph === 'over') break;
+      net.theirHits = m.n;
+      [S.bx, S.by, S.vx, S.vy] = m.b;
+      if (!S.pred) S.h++; // show the hit effect if we hadn't predicted it
+      S.last = 1 - me; S.pred = false; S.hold = false; S.ph = 'play';
+      advanceBall(oneWay());
+      break;
+    case 'pt': {
+      const total = m.sc[0] + m.sc[1];
+      if (total <= S.sc[0] + S.sc[1]) break;
+      S.sc = m.sc.slice(); S.vx = S.vy = 0; S.pred = false; S.hold = false;
+      const w = S.sc[0] >= WIN ? 0 : S.sc[1] >= WIN ? 1 : -1;
+      if (w >= 0) { S.ph = 'over'; S.win = w; }
+      else { S.ph = 'serve'; S.srv = m.srv; S.ang = m.ang; S.cd = Math.max(0.2, 1.1 - oneWay()); }
+      break;
     }
+    case 'go':
+      if (mode !== 'guest' || m.g <= net.gen) break;
+      net.gen = m.g;
+      resetMatch();
+      S.srv = m.srv; S.ang = m.ang; S.cd = Math.max(0.2, m.cd - oneWay());
+      break;
+    case 'r':
+      if (mode === 'host' && S.ph === 'over') hostRematch();
+      break;
   }
 }
 
-function applyRecvState(now) {
-  const m = recvState;
-  if (!m) return;
-  const e = m.ph === 'play' ? Math.min((now - recvAt) / 1000, 0.2) : 0;
-  let x = m.b[0] + m.b[2] * e, y = m.b[1] + m.b[3] * e;
-  if (x < BR) x = 2 * BR - x; else if (x > W - BR) x = 2 * (W - BR) - x;
-  S.bx = x; S.by = y; S.vx = m.b[2]; S.vy = m.b[3];
-  S.p[0] = S.p[0] + (m.p[0] - S.p[0]) * 0.6; // opponent paddle, lightly smoothed
-  S.sc = m.sc.slice(); S.ph = m.ph; S.cd = m.cd; S.h = m.h; S.wb = m.wb; S.last = m.l; S.win = m.w;
+function hostRematch() {
+  net.gen++;
+  resetMatch();
+  net.goAt = performance.now(); net.lastGo = 0;
 }
 
 // ---------- Flow ----------
@@ -319,7 +382,9 @@ function startGame(m) {
   target[0] = target[1] = W / 2;
   pvel[0] = pvel[1] = 0;
   parts.length = 0; trail.length = 0;
-  recvState = null; guestX = W / 2;
+  Object.assign(net, { myHits: 0, theirHits: 0, gen: 0, oppX: W / 2, rtt: 0, lastPo: 0, goAt: 0, lastGo: 0, lastPing: 0 });
+  if (mode === 'guest') S.ph = 'wait';           // until the host's "go"
+  if (mode === 'host') hostRematch();
   lastRecv = performance.now();
   syncEvents();
   running = true; paused = false; netWait = false;
@@ -335,17 +400,21 @@ function updateNetMode() {
   el.textContent = link.isDirect ? '⚡ Direct' : '☁ Relay';
 }
 
-function restart() {
-  const m = mode;
-  const seq = S.seq;
+// Fresh match on this device (keeps mode and connection)
+function resetMatch() {
+  const wasOver = S && S.ph === 'over';
   S = newState();
-  S.seq = seq;
   target[0] = target[1] = W / 2;
   parts.length = 0; trail.length = 0;
+  net.myHits = net.theirHits = 0;
   syncEvents();
   paused = false;
-  show(null);
-  mode = m;
+  if (wasOver || $('scrOver').classList.contains('on')) show(null);
+}
+
+function restart() {
+  if (mode === 'host') hostRematch();
+  else resetMatch();
 }
 
 function gameOver() {
@@ -501,28 +570,23 @@ const lastBall = { x: W / 2, y: H / 2 };
 
 function update(dt, now) {
   keyInput(dt);
+  const on = online();
+  netWait = on && now - lastRecv > 2000;
+  if (!paused && !netWait) {
+    acc += dt;
+    while (acc >= STEP) {
+      if (mode === 'solo') { movePaddle(0, STEP); cpuThink(STEP); }
+      else if (mode === 'local') { movePaddle(0, STEP); movePaddle(1, STEP); }
+      else { movePaddle(me, STEP); target[1 - me] = net.oppX; movePaddle(1 - me, STEP); }
+      step(STEP);
+      acc -= STEP;
+    }
+  } else acc = 0;
 
-  if (mode === 'guest') {
-    movePaddle(1, dt);
-    if (now - lastSend > (link?.isDirect ? 16 : 40)) { link?.send({ t: 'p', x: r3(S.p[1]) }); lastSend = now; }
-    const myX = S.p[1];
-    applyRecvState(now);
-    S.p[1] = myX; // own paddle is always local for zero-lag feel
-    netWait = now - lastRecv > 2000;
-  } else {
-    netWait = mode === 'host' && now - lastRecv > 2000;
-    if (!paused && !netWait) {
-      acc += dt;
-      while (acc >= STEP) {
-        movePaddle(0, STEP);
-        if (mode === 'solo') cpuThink(STEP);
-        else if (mode === 'local') movePaddle(1, STEP);
-        else if (mode === 'host') { target[1] = guestX; movePaddle(1, STEP); }
-        step(STEP);
-        acc -= STEP;
-      }
-    } else acc = 0;
-    if (mode === 'host' && now - lastSend > (link?.isDirect ? 15 : 33)) { link?.send(packState()); lastSend = now; }
+  if (on) {
+    if (now - lastSend > (link?.isDirect ? 16 : 33)) { link?.send({ t: 'p', x: r3(S.p[me]) }); lastSend = now; }
+    if (now - net.lastPing > 1000) { link?.send({ t: 'pi', ts: now }); net.lastPing = now; }
+    if (mode === 'host' && now - net.goAt < 1500 && now - net.lastGo > 250) { sendGo(); net.lastGo = now; }
   }
 
   if (S.ph === 'play' && S.by > -1 && S.by < H + 1) { lastBall.x = S.bx; lastBall.y = S.by; }
@@ -718,3 +782,6 @@ requestAnimationFrame(frame);
 // Auto-join from invite link (?join=CODE)
 const qJoin = cleanCode(new URLSearchParams(location.search).get('join'));
 if (qJoin.length === 4) { $('joinCode').value = qJoin; joinGame(qJoin); }
+
+// Debug/test hook (read-only)
+window.__pong = { get S() { return S; }, get net() { return net; }, get view() { return view; }, get mode() { return mode; } };
