@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#05040c">
+<title>Neon Arcade</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&display=swap" rel="stylesheet">
+<style>
+  :root { --bg: #05040c; --p0: #2ef6ff; --p1: #ff3dd8; --ink: #eef1ff; --dim: #8a8fb3; --line: rgba(255,255,255,.12); }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background-image:
+      radial-gradient(90% 60% at 50% 0%, rgba(80, 40, 160, .35), transparent 70%),
+      linear-gradient(rgba(140,150,255,.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(140,150,255,.05) 1px, transparent 1px);
+    background-size: auto, 32px 32px, 32px 32px;
+    padding: max(32px, env(safe-area-inset-top)) 16px 40px;
+  }
+  main { max-width: 520px; margin: 0 auto; }
+  h1 {
+    font-family: Orbitron, system-ui, sans-serif; font-weight: 800; text-align: center;
+    font-size: clamp(38px, 12vw, 64px); letter-spacing: .06em; margin: 12px 0 4px;
+    background: linear-gradient(90deg, var(--p0), #b48cff 50%, var(--p1));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    filter: drop-shadow(0 0 18px rgba(120,140,255,.5));
+  }
+  .sub { text-align: center; color: var(--dim); letter-spacing: .12em; text-transform: uppercase; font-size: 13px; margin-bottom: 28px; }
+  .grid { display: grid; gap: 14px; }
+  a.card, div.card {
+    display: flex; align-items: center; gap: 16px; padding: 18px; border-radius: 18px;
+    background: rgba(14,12,32,.75); border: 1px solid var(--line); color: inherit; text-decoration: none;
+    transition: transform .1s ease, box-shadow .2s, border-color .2s;
+  }
+  a.card { border-color: rgba(46,246,255,.5); box-shadow: 0 0 26px rgba(46,246,255,.15); }
+  a.card:active { transform: scale(.98); }
+  .icon { width: 60px; height: 60px; flex: none; border-radius: 14px; background: #0b0920; border: 1px solid var(--line); display: grid; place-items: center; }
+  .card h2 { font-family: Orbitron, system-ui, sans-serif; font-size: 20px; margin: 0 0 4px; letter-spacing: .04em; }
+  .card p { margin: 0; color: var(--dim); font-size: 14px; line-height: 1.4; }
+  div.card { opacity: .5; }
+  .pill { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--p1); }
+  footer { color: var(--dim); font-size: 13px; text-align: center; margin-top: 32px; line-height: 1.5; }
+</style>
+</head>
+<body>
+<main>
+  <h1>ARCADE</h1>
+  <div class="sub">Classics, re-lit · 2 phones or 1</div>
+  <div class="grid">
+    <a class="card" href="pong/">
+      <div class="icon">
+        <svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true">
+          <rect x="10" y="4" width="20" height="4" rx="2" fill="#ff3dd8"/>
+          <rect x="10" y="32" width="20" height="4" rx="2" fill="#2ef6ff"/>
+          <circle cx="24" cy="18" r="3" fill="#fff"/>
+        </svg>
+      </div>
+      <div><h2>PONG</h2><p>Neon paddles, rising speed. Solo vs CPU, same-device 2P, or phone vs phone.</p></div>
+    </a>
+    <div class="card"><div class="icon">?</div><div><div class="pill">Coming soon</div><h2>NEXT UP</h2><p>More classics on the way.</p></div></div>
+  </div>
+  <footer>Online play connects phones directly (WebRTC).<br>Works best with both phones on the same Wi-Fi.</footer>
+</main>
+</body>
+</html>
