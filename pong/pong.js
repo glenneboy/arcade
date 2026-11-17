@@ -303,7 +303,7 @@ function onData(m) {
 function applyRecvState(now) {
   const m = recvState;
   if (!m) return;
-  const e = m.ph === 'play' ? Math.min((now - recvAt) / 1000, 0.12) : 0;
+  const e = m.ph === 'play' ? Math.min((now - recvAt) / 1000, 0.2) : 0;
   let x = m.b[0] + m.b[2] * e, y = m.b[1] + m.b[3] * e;
   if (x < BR) x = 2 * BR - x; else if (x > W - BR) x = 2 * (W - BR) - x;
   S.bx = x; S.by = y; S.vx = m.b[2]; S.vy = m.b[3];
@@ -325,7 +325,14 @@ function startGame(m) {
   running = true; paused = false; netWait = false;
   show(null); hideToast();
   $('hud').classList.add('on');
+  updateNetMode();
   requestWakeLock();
+}
+
+function updateNetMode() {
+  const el = $('netMode');
+  if (!link || !(mode === 'host' || mode === 'guest')) { el.textContent = ''; return; }
+  el.textContent = link.isDirect ? '⚡ Direct' : '☁ Relay';
 }
 
 function restart() {
@@ -387,7 +394,7 @@ async function hostGame() {
   $('btnShare').disabled = true;
   link = new Link('pong');
   const myLink = link;
-  link.on('data', onData).on('close', onPeerClose);
+  link.on('data', onData).on('close', onPeerClose).on('mode', updateNetMode);
   link.on('connect', () => { if (link === myLink) { buzz(30); startGame('host'); } });
   try {
     const code = await link.host();
@@ -410,7 +417,7 @@ async function joinGame(raw) {
   $('joinTitle').textContent = `JOINING ${code}`;
   link = new Link('pong');
   const myLink = link;
-  link.on('data', onData).on('close', onPeerClose);
+  link.on('data', onData).on('close', onPeerClose).on('mode', updateNetMode);
   try {
     await link.join(code);
     if (link !== myLink) return;
@@ -497,13 +504,13 @@ function update(dt, now) {
 
   if (mode === 'guest') {
     movePaddle(1, dt);
-    if (now - lastSend > 16) { link?.send({ t: 'p', x: r3(S.p[1]) }); lastSend = now; }
+    if (now - lastSend > (link?.isDirect ? 16 : 40)) { link?.send({ t: 'p', x: r3(S.p[1]) }); lastSend = now; }
     const myX = S.p[1];
     applyRecvState(now);
     S.p[1] = myX; // own paddle is always local for zero-lag feel
-    netWait = now - lastRecv > 1200;
+    netWait = now - lastRecv > 2000;
   } else {
-    netWait = mode === 'host' && now - lastRecv > 1200;
+    netWait = mode === 'host' && now - lastRecv > 2000;
     if (!paused && !netWait) {
       acc += dt;
       while (acc >= STEP) {
@@ -515,7 +522,7 @@ function update(dt, now) {
         acc -= STEP;
       }
     } else acc = 0;
-    if (mode === 'host' && now - lastSend > 15) { link?.send(packState()); lastSend = now; }
+    if (mode === 'host' && now - lastSend > (link?.isDirect ? 15 : 33)) { link?.send(packState()); lastSend = now; }
   }
 
   if (S.ph === 'play' && S.by > -1 && S.by < H + 1) { lastBall.x = S.bx; lastBall.y = S.by; }
